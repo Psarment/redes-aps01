@@ -34,7 +34,6 @@ aps01/
 └── arquivos/
     ├── servidor.py
     ├── cliente.py
-    └── teste_concorrencia.py
 ```
 
 | Arquivo | O que faz |
@@ -42,7 +41,6 @@ aps01/
 | `README.md` | explica o projeto, como rodar, os comandos e as decisões que tomamos |
 | `arquivos/servidor.py` | servidor TCP que guarda a agenda na memória e atende cada cliente em uma thread |
 | `arquivos/cliente.py` | cliente de terminal: conecta no servidor, envia os comandos e mostra as respostas |
-| `arquivos/teste_concorrencia.py` | abre vários clientes ao mesmo tempo para conferir se os ids não se repetem |
 
 ## Como rodar
 
@@ -169,10 +167,109 @@ ERRO comando desconhecido
 
 ## Protocolo
 
+A comunicação é toda em texto em cima de uma conexão TCP. O cliente conecta uma vez e manda quantos comandos quiser pela mesma conexão, que só fecha quando ele digita `sair` ou quando o servidor cai.
+
+- Cada comando é uma linha.
+- O servidor responde cada comando na ordem em que chegou, e a primeira linha da resposta sempre começa com `OK` ou `ERRO`.
+- ADD, UPDATE e DELETE respondem com uma linha só.
+- O LIST é o único que responde com várias linhas: a primeira é `OK <n>` e depois vêm exatamente `n` linhas, uma por evento.
+
+Como o TCP é um fluxo de bytes e não separa as mensagens sozinho, a gente usou o `\n` para saber onde termina cada comando e cada resposta. No caso do LIST, o número que vem depois do `OK` serve para o cliente saber quantas linhas ainda faltam ler antes de mostrar o `>` de novo. Sem isso o cliente não teria como saber se a lista acabou.
+
+Formato de cada evento na resposta do LIST:
+
+```
+<id> <data> <hora> <duracao>min <titulo> | <descricao>
+```
+
+A parte do `| <descricao>` só aparece se o evento tiver descrição.
+
 ## Decisões de projeto
+
+**Formato do ADD.** O enunciado sugere `ADD <data> <hora> <titulo>`, mas o evento também precisa ter duração e uma descrição opcional, então o comando ficou assim:
+
+```
+ADD <data> <hora> <duracao> <titulo> | <descricao>
+```
+
+- Data, hora e duração vêm primeiro porque não têm espaço no meio, então dá para separar pelos espaços sem confusão.
+- O título vem por último antes do `|` para poder ter espaços (`Reuniao do grupo`). O servidor separa só os 3 primeiros campos e o que sobrar é o título.
+- A descrição também pode ter espaços, então precisava de um separador diferente do espaço. Escolhemos o `|`. Se não tiver `|`, o evento fica sem descrição.
+
+**Formato do UPDATE.** O enunciado sugere `UPDATE <id> <novo_valor>`, mas só com isso o servidor não sabe qual campo trocar (o `15:00` é uma hora, mas o `60` pode ser a duração ou o título). Por isso adicionamos o nome do campo:
+
+```
+UPDATE <id> <campo> <novo_valor>
+```
+
+Cada UPDATE muda um campo só. O novo valor passa pela mesma validação do ADD, então não dá para colocar uma data inválida editando o evento. Se o campo não existir, o servidor responde com a lista dos campos válidos.
+
+**Data e hora.** Usamos `AAAA-MM-DD` e `HH:MM` (24h). O servidor converte com o `datetime`, então datas que não existem, como `2026-02-30`, já dão erro. Ele também guarda sempre no mesmo formato (`9:30` vira `09:30`), e por isso dá para ordenar o LIST comparando a hora como texto.
+
+**LIST por dia.** O LIST pede a data porque o enunciado usa `LIST <data>` e porque, com muitos eventos, listar a agenda inteira ia ficar confuso. A resposta vem ordenada pela hora.
+
+**Ids.** Cada evento ganha um id que é só um contador que começa em 1. Quando um evento é apagado, o id dele não é reaproveitado. Assim, se um cliente apagar o evento 2 e outro criar um evento logo depois, o novo vai ser o 4 e não o 2. Isso evita que alguém dê UPDATE ou DELETE no evento errado achando que é o antigo.
+
+**Conflito de horário.** O servidor deixa criar dois eventos no mesmo horário. Como a agenda é compartilhada por várias pessoas, não faz sentido bloquear um compromisso só porque outra pessoa marcou algo na mesma hora.
+
+**Erros não derrubam a conexão.** Qualquer comando errado recebe uma linha `ERRO ...` explicando o problema, e o cliente pode continuar mandando comandos.
+
+**Agenda só na memória.** Como pede o enunciado, os eventos ficam em um dicionário dentro do servidor. Se o servidor for fechado, a agenda é perdida.
 
 ## Concorrência e integridade dos dados
 
+O servidor cria uma thread para cada cliente que conecta, então vários clientes podem estar mexendo na agenda ao mesmo tempo. Todas as threads usam o mesmo dicionário `agenda` e o mesmo contador `proximo_id`.
+
+Para não dar problema, usamos um `threading.Lock` único:
+
+- **ADD**: ler o `proximo_id`, salvar o evento e somar 1 no contador acontece dentro do lock. Sem isso, dois clientes que dessem ADD ao mesmo tempo podiam ler o mesmo valor do contador e ganhar o mesmo id, e um evento ia sobrescrever o outro.
+- **UPDATE e DELETE**: conferir se o id existe e alterar ou apagar o evento é feito dentro do lock. Assim não acontece de um cliente checar que o evento existe, outro apagar ele, e o primeiro tentar alterar algo que já sumiu.
+- **LIST**: a busca e a montagem das linhas também ficam dentro do lock, para não ler um evento no meio de uma alteração.
+
+A validação dos dados (data, hora, duração) é feita antes de pegar o lock, porque não mexe na agenda. Assim o lock fica preso o menor tempo possível e um cliente não segura os outros enquanto o servidor confere o que ele digitou.
+
 ## Exemplo
 
-## Testes
+Sessão real com o servidor rodando e um cliente conectado:
+
+```
+> ADD 2026-11-10 14:00 60 Reuniao do grupo | revisar o codigo
+OK evento 1 criado
+> ADD 2026-11-10 09:30 30 Aula de SD
+OK evento 2 criado
+> ADD 2026-11-11 08:00 120 Prova de redes
+OK evento 3 criado
+> LIST 2026-11-10
+OK 2
+2 2026-11-10 09:30 30min Aula de SD
+1 2026-11-10 14:00 60min Reuniao do grupo | revisar o codigo
+> UPDATE 1 hora 16:00
+OK evento 1 atualizado
+> UPDATE 2 descricao levar o notebook
+OK evento 2 atualizado
+> UPDATE 1 duracao abc
+ERRO valor invalido para duracao
+> LIST 2026-11-10
+OK 2
+2 2026-11-10 09:30 30min Aula de SD | levar o notebook
+1 2026-11-10 16:00 60min Reuniao do grupo | revisar o codigo
+> DELETE 2
+OK evento 2 removido
+> DELETE 2
+ERRO evento 2 nao encontrado
+> UPDATE 3 local CIn
+ERRO campo invalido, use titulo, data, hora, duracao ou descricao
+> list 2026-11-11
+OK 1
+3 2026-11-11 08:00 120min Prova de redes
+> sair
+```
+
+Depois disso, um segundo cliente que conectar já vê a agenda com as alterações do primeiro:
+
+```
+> LIST 2026-11-10
+OK 1
+1 2026-11-10 16:00 60min Reuniao do grupo | revisar o codigo
+```
+

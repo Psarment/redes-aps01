@@ -10,7 +10,7 @@ A ideia é ter um servidor que guarda uma agenda de compromissos na memória e v
 - Daniel Acioly
 - Pedro Sarmento
 - Luís Felipe Londres 
-- Lucas Cabral Matheus Santos
+- Lucas Cabral
 - Matheus Santos
 - Pablo Henrique
 
@@ -29,7 +29,7 @@ No Linux e no Mac normalmente o comando é `python3` em vez de `python`.
 ## Estrutura do repositório
 
 ```
-aps01/
+redes-aps01/
 ├── README.md
 └── arquivos/
     ├── servidor.py
@@ -56,7 +56,7 @@ arquivos/
 
 ```
 git clone <link do repositório>
-cd aps01/arquivos
+cd redes-aps01/arquivos
 ```
 
 **2\. Subir o servidor**
